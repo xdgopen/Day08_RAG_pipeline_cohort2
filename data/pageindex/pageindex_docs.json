@@ -1,0 +1,18 @@
+{
+  "documents": [
+    {
+      "source": "data/landing/legal/luat-phong-chong-ma-tuy-2021.pdf",
+      "filename": "luat-phong-chong-ma-tuy-2021.pdf",
+      "doc_type": "legal",
+      "doc_id": "pi-cmq4w1nej02fz01qxep63wwve",
+      "status": "uploaded"
+    },
+    {
+      "source": "data/landing/legal/quy-dinh-cac-danh-muc-chat-ma-tuy-va-tien-chat.pdf",
+      "filename": "quy-dinh-cac-danh-muc-chat-ma-tuy-va-tien-chat.pdf",
+      "doc_type": "legal",
+      "doc_id": "pi-cmq4w880r02h801qx1a682k19",
+      "status": "uploaded"
+    }
+  ]
+}

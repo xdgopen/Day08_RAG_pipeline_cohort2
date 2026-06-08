@@ -26,26 +26,38 @@ Cài đặt:
     pip install langchain-text-splitters sentence-transformers weaviate-client
 """
 
+import json
+from datetime import datetime
 from pathlib import Path
 
 STANDARDIZED_DIR = Path(__file__).parent.parent / "data" / "standardized"
+VECTOR_STORE_DIR = Path(__file__).parent.parent / "data" / "vector_store"
+INDEX_PATH = VECTOR_STORE_DIR / "drug_law_docs_index.json"
 
 
 # =============================================================================
 # CONFIGURATION — Giải thích lựa chọn của bạn trong comment
 # =============================================================================
 
-# TODO: Chọn chunking strategy và giải thích vì sao
-CHUNK_SIZE = 500        # Vì sao chọn 500? ...
-CHUNK_OVERLAP = 50      # Vì sao chọn 50? ...
-CHUNKING_METHOD = "recursive"  # "recursive" | "markdown_header" | "semantic"
+# Chunking strategy:
+# - RecursiveCharacterTextSplitter giữ đoạn văn Markdown tương đối nguyên vẹn
+#   bằng cách ưu tiên tách theo paragraph, dòng, câu rồi mới tới khoảng trắng.
+# - Phù hợp corpus hiện tại vì file pháp luật dài, file báo ngắn, heading không
+#   đồng đều; recursive splitter an toàn hơn MarkdownHeaderTextSplitter.
+CHUNK_SIZE = 800
+CHUNK_OVERLAP = 100
+CHUNKING_METHOD = "recursive"
 
-# TODO: Chọn embedding model và giải thích
-EMBEDDING_MODEL = "BAAI/bge-m3"  # Vì sao? Multilingual, tốt cho tiếng Việt
-EMBEDDING_DIM = 1024
+# Embedding model:
+# - all-MiniLM-L6-v2 nhẹ, nhanh, đã có cache local trong máy nên index ổn định
+#   không cần tải model lớn. Dimension 384 đủ nhỏ để lưu local và demo nhanh.
+EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
+EMBEDDING_DIM = 384
 
-# TODO: Chọn vector store
-VECTOR_STORE = "weaviate"  # "weaviate" | "chromadb" | "faiss"
+# Vector store:
+# - Lưu dense vectors vào JSON local để Task 4 index thành công ngay trong repo,
+#   không phụ thuộc Docker/Weaviate server. Task 5 có thể load file này để search.
+VECTOR_STORE = "local_json"
 
 
 # =============================================================================
@@ -59,17 +71,27 @@ def load_documents() -> list[dict]:
     Returns:
         List of {'content': str, 'metadata': {'source': str, 'type': str}}
     """
-    # TODO: Iterate qua STANDARDIZED_DIR, đọc .md files
-    # documents = []
-    # for md_file in STANDARDIZED_DIR.rglob("*.md"):
-    #     content = md_file.read_text(encoding="utf-8")
-    #     doc_type = "legal" if "legal" in str(md_file) else "news"
-    #     documents.append({
-    #         "content": content,
-    #         "metadata": {"source": md_file.name, "type": doc_type}
-    #     })
-    # return documents
-    raise NotImplementedError("Implement load_documents")
+    documents = []
+
+    for md_file in sorted(STANDARDIZED_DIR.rglob("*.md")):
+        content = md_file.read_text(encoding="utf-8").strip()
+        if not content:
+            continue
+
+        relative_path = md_file.relative_to(STANDARDIZED_DIR)
+        doc_type = relative_path.parts[0] if len(relative_path.parts) > 1 else "unknown"
+        documents.append(
+            {
+                "content": content,
+                "metadata": {
+                    "source": str(relative_path),
+                    "source_name": md_file.name,
+                    "doc_type": doc_type,
+                },
+            }
+        )
+
+    return documents
 
 
 def chunk_documents(documents: list[dict]) -> list[dict]:
@@ -79,26 +101,37 @@ def chunk_documents(documents: list[dict]) -> list[dict]:
     Returns:
         List of {'content': str, 'metadata': dict} — mỗi item là 1 chunk
     """
-    # TODO: Implement chunking
-    #
-    # Ví dụ với RecursiveCharacterTextSplitter:
-    # from langchain_text_splitters import RecursiveCharacterTextSplitter
-    #
-    # splitter = RecursiveCharacterTextSplitter(
-    #     chunk_size=CHUNK_SIZE,
-    #     chunk_overlap=CHUNK_OVERLAP,
-    #     separators=["\n\n", "\n", ". ", " ", ""]
-    # )
-    # chunks = []
-    # for doc in documents:
-    #     splits = splitter.split_text(doc["content"])
-    #     for i, chunk_text in enumerate(splits):
-    #         chunks.append({
-    #             "content": chunk_text,
-    #             "metadata": {**doc["metadata"], "chunk_index": i}
-    #         })
-    # return chunks
-    raise NotImplementedError("Implement chunk_documents")
+    if CHUNKING_METHOD != "recursive":
+        raise ValueError(f"Unsupported chunking method: {CHUNKING_METHOD}")
+
+    from langchain_text_splitters import RecursiveCharacterTextSplitter
+
+    splitter = RecursiveCharacterTextSplitter(
+        chunk_size=CHUNK_SIZE,
+        chunk_overlap=CHUNK_OVERLAP,
+        separators=["\n\n", "\n", ". ", "; ", ", ", " ", ""],
+    )
+
+    chunks = []
+    for doc in documents:
+        splits = splitter.split_text(doc["content"])
+        for chunk_index, chunk_text in enumerate(splits):
+            chunk_id = f"{doc['metadata']['source']}::chunk_{chunk_index:04d}"
+            chunks.append(
+                {
+                    "id": chunk_id,
+                    "content": chunk_text,
+                    "metadata": {
+                        **doc["metadata"],
+                        "chunk_index": chunk_index,
+                        "chunk_count": len(splits),
+                        "chunk_size": CHUNK_SIZE,
+                        "chunk_overlap": CHUNK_OVERLAP,
+                    },
+                }
+            )
+
+    return chunks
 
 
 def embed_chunks(chunks: list[dict]) -> list[dict]:
@@ -108,51 +141,61 @@ def embed_chunks(chunks: list[dict]) -> list[dict]:
     Returns:
         Mỗi chunk dict được thêm key 'embedding': list[float]
     """
-    # TODO: Implement embedding
-    #
-    # Ví dụ với sentence-transformers:
-    # from sentence_transformers import SentenceTransformer
-    #
-    # model = SentenceTransformer(EMBEDDING_MODEL)
-    # texts = [c["content"] for c in chunks]
-    # embeddings = model.encode(texts, show_progress_bar=True)
-    # for chunk, emb in zip(chunks, embeddings):
-    #     chunk["embedding"] = emb.tolist()
-    # return chunks
-    raise NotImplementedError("Implement embed_chunks")
+    from sentence_transformers import SentenceTransformer
+
+    try:
+        model = SentenceTransformer(EMBEDDING_MODEL, local_files_only=True)
+    except TypeError:
+        model = SentenceTransformer(EMBEDDING_MODEL)
+
+    texts = [chunk["content"] for chunk in chunks]
+    embeddings = model.encode(
+        texts,
+        batch_size=32,
+        normalize_embeddings=True,
+        show_progress_bar=True,
+    )
+
+    for chunk, embedding in zip(chunks, embeddings):
+        vector = embedding.tolist()
+        if len(vector) != EMBEDDING_DIM:
+            raise ValueError(
+                f"Expected embedding dim {EMBEDDING_DIM}, got {len(vector)}"
+            )
+        chunk["embedding"] = vector
+
+    return chunks
 
 
 def index_to_vectorstore(chunks: list[dict]):
     """
     Lưu chunks vào vector store đã chọn.
     """
-    # TODO: Implement indexing
-    #
-    # Ví dụ với Weaviate:
-    # import weaviate
-    # from weaviate.classes.config import Configure, Property, DataType
-    #
-    # client = weaviate.connect_to_local()  # hoặc connect_to_weaviate_cloud()
-    #
-    # # Tạo collection
-    # collection = client.collections.create(
-    #     name="DrugLawDocs",
-    #     vectorizer_config=Configure.Vectorizer.none(),
-    #     properties=[
-    #         Property(name="content", data_type=DataType.TEXT),
-    #         Property(name="source", data_type=DataType.TEXT),
-    #         Property(name="doc_type", data_type=DataType.TEXT),
-    #     ]
-    # )
-    #
-    # # Insert chunks
-    # with collection.batch.dynamic() as batch:
-    #     for chunk in chunks:
-    #         batch.add_object(
-    #             properties={"content": chunk["content"], ...},
-    #             vector=chunk["embedding"]
-    #         )
-    raise NotImplementedError("Implement index_to_vectorstore")
+    if VECTOR_STORE != "local_json":
+        raise ValueError(f"Unsupported vector store: {VECTOR_STORE}")
+
+    VECTOR_STORE_DIR.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "index_name": "DrugLawDocs",
+        "created_at": datetime.now().isoformat(),
+        "vector_store": VECTOR_STORE,
+        "chunking": {
+            "method": CHUNKING_METHOD,
+            "chunk_size": CHUNK_SIZE,
+            "chunk_overlap": CHUNK_OVERLAP,
+        },
+        "embedding": {
+            "model": EMBEDDING_MODEL,
+            "dimension": EMBEDDING_DIM,
+            "normalized": True,
+        },
+        "documents_indexed": len({chunk["metadata"]["source"] for chunk in chunks}),
+        "chunks_indexed": len(chunks),
+        "chunks": chunks,
+    }
+
+    INDEX_PATH.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    print(f"  Saved local vector index: {INDEX_PATH}")
 
 
 def run_pipeline():
